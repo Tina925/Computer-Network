@@ -1,0 +1,270 @@
+/* The code is subject to Purdue University copyright policies.
+ * DO NOT SHARE, DISTRIBUTE, OR POST ONLINE
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <signal.h>
+#include <sys/time.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/select.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+
+#define LISTEN_QUEUE 50 /* Max outstanding connection requests; listen() param */
+
+// #define DBADDR "127.0.0.1"
+// #define SERVPORT 8021
+// #define DBPORT 53021
+#define buff_size 4096
+
+int main(int argc, char *argv[])
+{
+    if (argc != 3)
+    {
+        fprintf(stderr, "usage: ./http_server [server port] [DB port]\n");
+        exit(1);
+    }
+    int SERVPORT = atoi(argv[1]);
+    int DBPORT = atoi(argv[2]);
+    int num;
+    char buffer[buff_size];
+    int sockfd, new_fd;
+    struct sockaddr_in my_addr;
+    struct sockaddr_in their_addr; /* client's address info */
+    socklen_t sin_size;
+    char dst[INET_ADDRSTRLEN];
+
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+        perror("socket");
+        exit(1);
+    }
+    struct hostent *he;
+    he = gethostbyname("localhost");
+    my_addr.sin_family = AF_INET;
+    my_addr.sin_port = htons(SERVPORT);
+    my_addr.sin_addr = *((struct in_addr *)he->h_addr_list[0]);
+    bzero(&(my_addr.sin_zero), 8);
+
+    if (bind(sockfd, (struct sockaddr *)&my_addr, sizeof(my_addr)) < 0)
+    {
+        perror("bind");
+        exit(1);
+    }
+    if (listen(sockfd, LISTEN_QUEUE) < 0)
+    {
+        perror("listen");
+        exit(1);
+    }
+    int sockfd2;
+    if ((he = gethostbyname(argv[1])) == NULL)
+    {
+        herror("gethostbyname");
+        exit(1);
+    }
+    struct sockaddr_in udp_addr;
+    if ((sockfd2 = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+    {
+        perror("socket");
+        exit(1);
+    }
+    memset(&udp_addr, 0, sizeof(udp_addr)); // Zero out the structure
+    udp_addr.sin_family = AF_INET;
+    udp_addr.sin_port = htons(DBPORT); // Your desired port for the UDP socket
+    udp_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    printf("the DBPORT is %d\n", DBPORT);
+    if (bind(sockfd2, (struct sockaddr *)&udp_addr, sizeof(udp_addr)) < 0)
+    {
+        perror("bind");
+        exit(1);
+    }
+    while (1)
+    {
+        sin_size = sizeof(their_addr);
+        if ((new_fd = accept(sockfd,
+                             (struct sockaddr *)&their_addr, &sin_size)) < 0)
+        {
+            perror("accept");
+            continue;
+        }
+        // printf("server: got connection from %s\n", dst);
+        num = recv(new_fd, buffer, 4095, 0);
+        if (num < 0)
+        {
+            perror("recv");
+            exit(1);
+        }
+        FILE *file;
+        char *get;
+        char *typehp;
+        char *command;
+        char response[4096];
+        int fileSize;
+        get = strtok(buffer, " ");
+        command = strtok(NULL, " ");
+        typehp = strtok(NULL, " ");
+        char tempbuff[4096];
+        char *ip = inet_ntoa(their_addr.sin_addr);
+        char link[50] = "Webpage";
+        if (get != NULL)
+        {
+            if (strstr(command, "/") != NULL)
+            {
+                if (typehp != NULL)
+                {
+                    if (strstr(buffer, "/../") == NULL || strstr(buffer, "/..") == NULL)
+                    {
+                        // printf("enter last if\n");
+                        //  int fileSize = readFile(file, command, tempbuff, ip);
+
+                        int tempr = -1;
+                        int fileSize = 0;
+                        char *temp = "/";
+                        if (strcmp(command, temp) == 0)
+                        {
+                            command = "/index.html";
+                        }
+                        strcat(link, command);
+                        struct stat fileStat;
+                        if (stat(link, &fileStat) != 0)
+                        {
+                            // printf("enter if stat\n");
+                            snprintf(response, sizeof(response), "HTTP/1.0 404 Not Found\r\n\r\n<html><body><h1>404 Not Found</h1></body></html>");
+                            send(new_fd, response, strlen(response), 0);
+                            fprintf(stdout, "%s \"GET %s HTTP/1.1\" 404 Not Found \n", ip, command);
+                        }
+                        else
+                        {
+                            // printf("enter else stat\n");
+                            snprintf(response, sizeof(response), "HTTP/1.0 200 OK\r\n\r\n");
+
+                            // snprintf(response, sizeof(response), "HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n", 3033);
+
+                            send(new_fd, response, strlen(response), 0);
+                            file = fopen(link, "rb");
+                            if (file == NULL)
+                            {
+                                perror("fopen");
+                                return 0;
+                            }
+                            while (tempr != 0)
+                            {
+                                tempr = fread(tempbuff, sizeof(char), 4096, file);
+                                // printf("fread result %d\n", tempr);
+                                send(new_fd, tempbuff, tempr, 0);
+                            }
+                            fprintf(stdout, "%s \"GET %s HTTP/1.1\" 200 OK \n", ip, command);
+                        }
+                    }
+                    else
+                    {
+                        snprintf(response, sizeof(response), "HTTP/1.0 400 Bad Request\r\n\r\n<html><body><h1>400 Bad Request</h1></body></html>");
+                        send(new_fd, response, 1000, 0);
+                    }
+                }
+                else
+                {
+                    snprintf(response, sizeof(response), "HTTP/1.0 501 Not Implemented\r\n\r\n<html><body><h1>501 Not Implemented</h1></body></html>");
+                    send(new_fd, response, 1000, 0);
+                }
+            }
+            else
+            {
+                snprintf(response, sizeof(response), "HTTP/1.0 400 Bad Request\r\n\r\n<html><body><h1>400 Bad Request</h1></body></html>");
+                send(new_fd, response, 1000, 0);
+            }
+        }
+        else
+        {
+            snprintf(response, sizeof(response), "HTTP/1.0 501 Not Implemented\r\n\r\n<html><body><h1>501 Not Implemented</h1></body></html>");
+            send(new_fd, response, 1000, 0);
+        }
+        /////////////////////////////////////////////////////////////////////////////
+        printf("enter UDP part\n");
+        int addr_len, numbytes, i;
+        addr_len = sizeof(struct sockaddr);
+        char buf[4096];
+        struct timeval timeout;
+        timeout.tv_sec = 5;
+        printf("before UDP recvfrom part\n");
+        if ((numbytes = recvfrom(sockfd2, buf, 4096, 0, (struct sockaddr *)&their_addr, &addr_len)) < 0)
+        {
+            perror("recvfrom");
+            exit(1);
+        }
+        printf("after UDP recvfrom part\n");
+        printf("the buffer is %s", buf);
+        // find the string type in
+        char *begin = strstr(buf, "?key=");
+        if (begin != NULL)
+        {
+            begin += strlen("?key=");
+            char *end = strchr(begin, ' ');
+            if (end != NULL)
+            {
+                size_t keyLength;
+                keyLength = end - begin;
+                char key[keyLength + 1];
+                strncpy(key, begin, end);
+                key[keyLength] = '\0';
+                printf("extgracted key is%s\n\n", key);
+            }
+        }
+        close(new_fd);
+        close(sockfd2);
+        return 0;
+        ////////////////////////////////////////PART 2////////////////////////////////////////////////
+        //  while (1)
+        //     {
+        //         printf("enter second while\n");
+        //         int addr_len, numbytes, i;
+        //         addr_len = sizeof(struct sockaddr);
+        //         char buf[4096];
+        //         struct timeval timeout;
+        //         timeout.tv_sec = 5;
+
+        //         if ((numbytes = recvfrom(sockfd2, buf, 4096, 0,
+        //                                  (struct sockaddr *)&their_addr, &addr_len)) < 0)
+        //         {
+        //             perror("recvfrom");
+        //             exit(1);
+        //         }
+        //         printf("the buffer is %s", buf);
+        //         // find the string type in
+        //         char *begin = strstr(buf, "?key=");
+        //         if (begin != NULL)
+        //         {
+        //             begin += strlen("?key=");
+        //             char *end = strchr(begin, ' ');
+        //             if (end != NULL)
+        //             {
+        //                 size_t keyLength;
+        //                 keyLength = end - begin;
+        //                 char key[keyLength + 1];
+        //                 strncpy(key, begin, end);
+        //                 key[keyLength] = '\0';
+        //                 printf("extgracted key is%s\n\n", key);
+        //             }
+        //             // else{
+        //             //"HTTP/1.0 404 Not Found";
+        //             //}
+        //             /*
+        //             if (sendto(sockfd2, ip, MAX_IP_ADDR*INET_ADDRSTRLEN, 0,
+        //             (struct sockaddr *) &their_addr, addr_len) < 0) {
+        //                 perror("sendto");
+        //                 exit(1);
+        //             }*/
+        //         }
+
+        //}
+    }
+}
